@@ -52,3 +52,20 @@ output "dkim_dns_records" {
     }
   ]
 }
+
+output "energy_reader_policy_json" {
+  description = "IAM policy for an outside workflow that reads the latest energy state: GetItem on ENERGY#<vehicle_id> only. Attach it to that workflow's identity yourself (infra/README.md, Laadstand)."
+  value = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["dynamodb:GetItem"]
+      Resource = aws_dynamodb_table.data.arn
+      Condition = {
+        "ForAllValues:StringEquals" = {
+          "dynamodb:LeadingKeys" = ["ENERGY#${var.vehicle_id}"]
+        }
+      }
+    }]
+  })
+}

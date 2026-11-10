@@ -5,6 +5,8 @@ Environment (set by Terraform):
     SECRET_ID      Secrets Manager secret with the CarData tokens (kmlog/cardata)
     VEHICLE_ID     key of observations/legs (default "car", same as `kmlog --vehicle`)
     QUOTA_LIMIT    max CarData API calls per UTC day (40; BMW's limit is 50)
+    ENERGY_TRACKING "1" = also read SoC/range/charging state and keep the latest (poller only;
+                    default "0")
     REPORTS_BUCKET S3 bucket for maandstaten (report only)
     REPORT_EMAIL   SES-verified address; sender and recipient of all mail
     WEB_SECRET_ID  Secrets Manager secret with the session signing key (kmlog/web; web only)

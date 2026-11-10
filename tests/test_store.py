@@ -213,3 +213,61 @@ def test_legs_imported_from_a_spreadsheet_load_as_manual():
     leg = loads(Leg, old)
     assert leg.source is LegSource.MANUAL and leg.date == date(2026, 10, 5)
     assert leg.imported and not _leg(5, LegSource.MANUAL).imported
+
+
+def test_energy_state_roundtrip_and_older_poll_does_not_overwrite(store):
+    from kmlog.model import EnergyState
+
+    assert store.energy_state("car") is None
+    new = EnergyState(
+        "car", T0 + timedelta(hours=2), soc_pct=40, charging_status="X", plugged_in=False
+    )
+    store.put_energy_state(new)
+    assert store.energy_state("car") == new
+    store.put_energy_state(EnergyState("car", T0, soc_pct=90))
+    assert store.energy_state("car") == new
+    newer = EnergyState("car", T0 + timedelta(hours=3), soc_pct=80, at_home=True, location_id="h")
+    store.put_energy_state(newer)
+    assert store.energy_state("car") == newer
+    assert store.energy_state("other") is None
+
+
+def test_energy_item_has_flat_attributes(aws, dynamodb_table):
+    from kmlog.model import EnergyState
+    from kmlog.store.dynamodb import DynamoDbStore
+
+    s = DynamoDbStore(dynamodb_table)
+    s.put_energy_state(
+        EnergyState(
+            "car",
+            T0,
+            soc_pct=40,
+            electric_range_km=18,
+            charging_status="NOCHARGING",
+            plug_status="DISCONNECTED",
+            plugged_in=False,
+            at_home=True,
+            location_id="home",
+            reported_at=T0,
+        )
+    )
+    item = s.table.get_item(Key={"PK": "ENERGY#car", "SK": "LATEST"})["Item"]
+    assert item["soc_pct"] == 40 and item["electric_range_km"] == 18
+    assert item["plugged_in"] is False and item["at_home"] is True
+    assert item["charging_status"] == "NOCHARGING" and item["location_id"] == "home"
+    assert item["polled_at"] == T0.isoformat() and item["reported_at"] == T0.isoformat()
+    assert "fuel_level_pct" not in item and "total_range_km" not in item
+
+
+def test_observation_with_energy_roundtrips_and_one_without_still_loads(store):
+    from kmlog.model import EnergyState
+
+    energy = EnergyState("car", T0, soc_pct=50, plugged_in=True, reported_at=T0)
+    obs = Observation("car", T0, 100, T0, 52.0, 4.5, T0, None, energy)
+    store.put_observations([obs])
+    assert store.observations("car") == [obs]
+    old = json.loads(dumps(Observation("car", T0, 100, T0, 52.0, 4.5, T0)))
+    old.pop("energy")  # written by a version without the field
+    assert loads(Observation, json.dumps(old)).energy is None
+    newer = json.loads(dumps(obs)) | {"future_field": 1}
+    assert loads(Observation, json.dumps(newer)).energy == energy

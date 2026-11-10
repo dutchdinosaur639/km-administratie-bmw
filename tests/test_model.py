@@ -28,3 +28,14 @@ def test_leg_defaults_are_conservative():
     assert leg.business_km == 0
     assert leg.status is LegStatus.AUTO
     assert leg.source is LegSource.CARDATA
+
+
+def test_observation_energy_defaults_to_none():
+    from datetime import UTC, datetime
+
+    from kmlog.model import EnergyState, Observation
+
+    t = datetime(2026, 10, 7, tzinfo=UTC)
+    assert Observation("car", t, 1, t, None, None, None).energy is None
+    e = EnergyState("car", t)
+    assert (e.soc_pct, e.plugged_in, e.at_home) == (None, None, None)

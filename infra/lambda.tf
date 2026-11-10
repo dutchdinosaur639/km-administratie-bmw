@@ -34,6 +34,8 @@ locals {
     poller = merge(local.common_env, {
       SECRET_ID   = aws_secretsmanager_secret.cardata.name
       QUOTA_LIMIT = tostring(var.quota_limit)
+      # opt-in: also read charge level / range / plug state (docs/ONTWERP.md §6)
+      ENERGY_TRACKING = var.energy_tracking ? "1" : "0"
     })
     web = merge(local.common_env, {
       REPORT_EMAIL  = var.report_email

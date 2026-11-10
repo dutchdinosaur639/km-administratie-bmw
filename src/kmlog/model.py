@@ -121,6 +121,26 @@ class Route:
         return {self.location_a, self.location_b} == {loc1, loc2}
 
 
+@dataclass
+class EnergyState:
+    """Battery/charging snapshot of one poll (opt-in, ENERGY_TRACKING). Status strings are the
+    raw BMW values, not enums: a new value must never break reading by an older version."""
+
+    vehicle: str
+    polled_at: datetime
+    soc_pct: int | None = None
+    electric_range_km: int | None = None
+    total_range_km: int | None = None
+    fuel_level_pct: int | None = None
+    charging_status: str | None = None
+    plug_status: str | None = None
+    plugged_in: bool | None = None  # derived from plug_status; None when unknown
+    charge_time_remaining_min: int | None = None
+    reported_at: datetime | None = None  # newest timestamp among the filled energy fields
+    location_id: str | None = None  # matched place at poll time (set by the poller)
+    at_home: bool | None = None  # that place is of type home (set by the poller)
+
+
 @dataclass(frozen=True)
 class Observation:
     """One poll of the CarData API. odometer_ts is when the car reported the value,
@@ -134,6 +154,7 @@ class Observation:
     lon: float | None
     loc_ts: datetime | None
     raw: dict | None = None
+    energy: EnergyState | None = None
 
 
 @dataclass

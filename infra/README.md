@@ -41,6 +41,7 @@ Zie [`variables.tf`](variables.tf); zet ze in `infra/terraform.tfvars` (gitignor
 | `geocoder_contact` | de repo-URL | contact-URL in de User-Agent van zoekopdrachten |
 | `web_domain` | — | eigen domein voor de webinterface, zie *Eigen domein* |
 | `web_max_concurrency` | `5` | maximaal aantal gelijktijdige uitvoeringen van de web-Lambda (kostenplafond); `null` = geen plafond |
+| `energy_tracking` | `false` | leest ook laadstand, actieradius en stekkerstatus, zie *Laadstand* |
 | `dkim_private_key_file` | — | alleen voor Bring Your Own DKIM, zie hieronder |
 
 ## Bijwerken
@@ -143,6 +144,50 @@ Los van het eigen domein geldt een kostenplafond: de web-Lambda draait met hoogu
 plaats van opgeschaald. AWS houdt per account minstens 10 niet-gereserveerde uitvoeringen vrij; is
 het accountlimiet lager dan 15, zet dan `web_max_concurrency = null`. Uitzetten: `web_domain`
 weghalen en opnieuw deployen; certificaat en distributie worden dan verwijderd.
+
+## Laadstand
+
+Alleen voor een plug-in hybride of elektrische auto, en alleen als je er buiten km-admin iets mee
+wilt (bijv. een melding "steek de stekker erin" via Home Assistant of n8n; die melding zit niet in
+km-admin). Met `energy_tracking = true` leest de poller elk uur ook acculading, elektrische
+actieradius, laadstatus en stekkerstatus en bewaart de laatste stand in één DynamoDB-item
+(`PK = ENERGY#<vehicle_id>`, `SK = LATEST`, platte attributen: `soc_pct`, `electric_range_km`,
+`total_range_km`, `fuel_level_pct`, `charging_status`, `plug_status`, `plugged_in`,
+`charge_time_remaining_min`, `at_home`, `location_id`, `polled_at`, `reported_at`). Uit (standaard)
+verandert er niets: zelfde container, zelfde descriptors.
+
+Uitrollen, in deze volgorde:
+
+A. Installeer de versie met `energy_tracking = false` (gedrag ongewijzigd).
+B. Probeer welke descriptors jouw auto vult (kost 3 CarData-calls; de namen zijn voor een 2018 530e
+   nog niet geverifieerd, zie `docs/ONTWERP.md` §6):
+
+   ```sh
+   aws lambda invoke --function-name kmlog-poller --cli-binary-format raw-in-base64-out \
+     --payload '{"probe": true}' out.json && cat out.json
+   ```
+
+   De probe draait in de Lambda, want de refresh token roteert en alleen de Lambdas beheren hem.
+   `filled` toont de gevulde descriptors, `empty` de lege. Pas zo nodig `ENERGY_DESCRIPTORS` aan.
+C. Zet `energy_tracking = true`, `terraform plan` lezen, `apply`. De eerstvolgende poll vervangt de
+   container (2 extra calls, eenmalig).
+D. Koppel de buitenstaande workflow: `terraform output -raw energy_reader_policy_json` is een
+   IAM-policy die alleen `dynamodb:GetItem` toestaat op `ENERGY#<vehicle_id>` (via
+   `dynamodb:LeadingKeys`); de workflow ziet dus geen ritten of posities. Maak die policy aan en
+   hang hem zelf aan de identiteit van de workflow (rol of gebruiker; Terraform maakt die niet
+   aan). Lees het item bijv. elk uur:
+
+   ```sh
+   aws dynamodb get-item --table-name kmlog-data \
+     --key '{"PK":{"S":"ENERGY#car"},"SK":{"S":"LATEST"}}'
+   ```
+
+   en meld bijvoorbeeld wanneer `at_home` waar is, `plugged_in` onwaar en `soc_pct` onder je
+   drempel. `plugged_in` is leeg als BMW een onbekende waarde geeft; `charging_status` en
+   `plug_status` zijn de ruwe BMW-teksten.
+
+Terugzetten naar een versie zonder deze functie kan zonder meer (alleen een extra item en een extra
+optioneel veld).
 
 ## Adres zoeken
 

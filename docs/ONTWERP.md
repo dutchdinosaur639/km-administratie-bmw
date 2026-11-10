@@ -153,6 +153,20 @@ geverifieerd tegen de broncode van drie community-clients (zie §12) en in de pr
 - **Descriptors** die kmlog gebruikt:
   - kilometerstand: `vehicle.vehicle.travelledDistance` (km)
   - positie: `vehicle.cabin.infotainment.navigation.currentLocation.latitude` en `.longitude`
+- **Energie-descriptors** (opt-in, `energy_tracking`; zonder die optie blijft het bij de twee
+  hierboven): acculading (`vehicle.drivetrain.batteryManagement.header` en
+  `vehicle.powertrain.electric.battery.stateOfCharge.displayed`), elektrische actieradius
+  (`vehicle.drivetrain.electricEngine.kombiRemainingElectricRange`), totale actieradius
+  (`vehicle.drivetrain.lastRemainingRange`), brandstofniveau (`vehicle.drivetrain.fuelSystem.level`),
+  laadstatus (`vehicle.drivetrain.electricEngine.charging.status`), stekkerstatus
+  (`vehicle.body.chargingPort.status`) en resterende laadtijd
+  (`vehicle.drivetrain.electricEngine.charging.timeRemaining`). **Namen nog te verifiëren op een
+  2018 530e**; niet elke auto vult elke descriptor. Een wijziging van de descriptorlijst vervangt
+  de container eenmalig (2 calls).
+- **Probe**: event `{"probe": true}` op de poller maakt een wegwerpcontainer (`kmlog-probe`) met alle
+  kandidaten, leest telematicData en verwijdert hem weer (3 calls) en toont welke descriptors
+  gevuld zijn (zonder VIN of tokens). Dit draait in de Lambda omdat de refresh token roteert en
+  alleen de Lambdas hem beheren.
 - **Quotum**: **50 REST-calls per 24 uur** per account; ook mappings- en container-calls tellen mee
   (auth-calls niet); reset 00:00 UTC; 429 of 403 `CU-429`. Andere 403's: `CU-103` (scope),
   `CU-104` (VIN niet van jou), `CU-105` (containerId).
@@ -298,6 +312,16 @@ een eigen partitie). Lokaal dezelfde records als JSON in SQLite.
   `status` (`auto`|`needs_confirmation`|`confirmed`|`timed_out`), `flags[]`, `note`,
   `source` (`cardata`|`manual`), `odometer_from/to`, `waypoints[]`. Ritten uit oudere databases
   met een spreadsheet-bron worden als `manual` ingelezen.
+- **EnergyState** (alleen met `energy_tracking`): `vehicle`, `polled_at`, `soc_pct?`,
+  `electric_range_km?`, `total_range_km?`, `fuel_level_pct?`, `charging_status?` en `plug_status?`
+  (ruwe BMW-teksten, geen enum), `plugged_in?` (afgeleid; leeg bij een onbekende tekst),
+  `charge_time_remaining_min?`, `reported_at?` (nieuwste BMW-tijdstempel), `location_id?`,
+  `at_home?` (door de poller gezet). Staat als optioneel veld `energy` op de Observation (historie)
+  en als eigen item `ENERGY#<vehicle>` / `LATEST` met `data` (codec-JSON) plus platte attributen
+  (`soc_pct`, `electric_range_km`, `total_range_km`, `fuel_level_pct`, `charging_status`,
+  `plug_status`, `plugged_in`, `charge_time_remaining_min`, `at_home`, `location_id`, `polled_at`,
+  `reported_at`; leeg = weggelaten) voor lezers buiten km-admin. Conditioneel geschreven: alleen
+  als `polled_at` niet ouder is dan het opgeslagene.
 - **DayNote**: `vehicle`, `date`, `text`.
 - **SentReport**: `year`, `month`, `sent_at`, `business_km`, `amount_cents`: wat er in de maandmail
   stond, om "gewijzigd na verzending" te kunnen tonen (§9).
@@ -505,6 +529,7 @@ tijdstempels.
 | 2026-10-27 | Handmatige rit op een dag van een gat = jij neemt het gat over: de leg erover telt als privé | Anders telt de rit dubbel (handmatig + `E` op de leg). Km aftrekken van de leg is lastiger uit te leggen en levert in geen geval meer op. Waarschuwing als de handmatige km de gereden km overschrijden. |
 | 2026-10-21 | Achter CloudFront: geheime header `X-Origin-Verify`, de app weigert verzoeken zonder; web-Lambda met gereserveerde concurrency 5 | De kale Function URL is dan geen omweg meer, en een vloed verzoeken kost hooguit wat CloudFront-verzoeken in plaats van opschalende Lambdas. Cloudflare als proxy afgewezen: het pakt het verkeer uit (eigen certificaat) en beschermt alleen de route via het domein. |
 | 2026-11-03 | Maandstaat en jaaroverzicht ook als PDF, naast de Excel, met een eigen kleine schrijver op de standaardbibliotheek; tekens buiten WinAnsi worden vervangen | Boekhoudprogramma's (bijv. Exact Online) nemen een PDF als bijlage bij een boeking, geen .xlsx; een PDF is ook het archiefstuk. Eén `Maandstaat` voor beide formaten. reportlab maakte de zip 8 MB groter (~1 → ~9 MB): 6,3 MB daarvan is Pillow met 18 native bibliotheken, door reportlab altijd geïmporteerd terwijl de PDF geen afbeeldingen heeft. Lichtere pakketten vielen af (pdfme crasht op € en →, borb is AGPL, fpdf2 heeft ook Pillow nodig). Een vaste tabel met tekst is goed zelf te schrijven (`report/pdfwriter.py`). Ingebedde lettertypen zijn daarmee bewerkelijk; de spelling van een enkele buitenlandse naam weegt daar niet tegen op. Is ooit een afbeelding of volledige Unicode nodig, dan is reportlab de overstap: alleen `report/pdf.py` verandert. |
+| 2026-11-10 | Laadstand en actieradius bewaren (opt-in `energy_tracking`), als eigen item `ENERGY#<vehicle>`/`LATEST`; ruwe BMW-teksten voor laad- en stekkerstatus; de melding zelf buiten km-admin; de probe draait in de poller-Lambda | Eigen partitie: een IAM-lezer met `dynamodb:LeadingKeys` ziet verder niets (geen ritten of posities). Ruwe teksten in plaats van enums: een nieuwe waarde van BMW breekt de vorige versie niet bij terugzetten (§ Versies, AGENTS.md). Opt-in: installaties zonder plug-in (bijv. i4) houden exact dezelfde container en calls. De melding hoort in een workflow naar eigen keuze (Home Assistant, n8n), niet in km-admin. De probe draait in de Lambda omdat refresh tokens roteren en alleen de Lambdas ze beheren; een lokaal script zou de token ongeldig maken. Terugzetten is veilig: alleen een nieuw item en een nieuw optioneel veld. |
 
 ## 12. Bronnen
 

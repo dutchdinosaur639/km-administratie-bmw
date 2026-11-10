@@ -99,3 +99,13 @@ variable "web_max_concurrency" {
   type        = number
   default     = 5
 }
+
+variable "energy_tracking" {
+  description = <<-EOT
+    Also read state of charge, electric range, charging status and plug state every poll and keep
+    the latest in DynamoDB (item ENERGY#<vehicle_id>/LATEST), for a workflow outside km-admin
+    (infra/README.md "Laadstand"). Off = exactly the descriptors and behaviour without this option.
+  EOT
+  type        = bool
+  default     = false
+}

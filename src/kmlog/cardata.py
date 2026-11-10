@@ -16,8 +16,8 @@ Token state is a dict kept in a TokenStore: a JSON file locally (.cardata_tokens
 Secrets Manager secret `kmlog/cardata` in AWS. Keys: client_id, access_token, refresh_token,
 expires_at (epoch seconds), container_id, container_descriptors, vin, plus while linking via
 the web UI: pending_login (a started device-code login) and vehicles (the account's mappings).
-A container whose descriptors differ from DESCRIPTORS is replaced (and the old one deleted) on
-the next poll.
+A container whose descriptors differ from the client's `descriptors` is replaced (and the old
+one deleted) on the next poll.
 """
 
 from __future__ import annotations
@@ -31,13 +31,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Protocol
 
 import requests
 
-from .model import Observation
+from .model import EnergyState, Observation
 
 DEVICE_CODE_URL = "https://customer.bmwgroup.com/gcdm/oauth/device/code"
 TOKEN_URL = "https://customer.bmwgroup.com/gcdm/oauth/token"
@@ -57,6 +57,35 @@ DESCRIPTORS = [
     LONGITUDE_DESCRIPTOR,
 ]
 CONTAINER_NAME = "kmlog"
+PROBE_CONTAINER_NAME = "kmlog-probe"
+
+# Energy state (opt-in, ENERGY_TRACKING). Names for a G30 530e are UNVERIFIED: run the
+# {"probe": true} event and fix the names that stay empty (ONTWERP §6).
+ENERGY_DESCRIPTORS = {
+    "soc": "vehicle.drivetrain.batteryManagement.header",
+    "soc_displayed": "vehicle.powertrain.electric.battery.stateOfCharge.displayed",
+    "electric_range": "vehicle.drivetrain.electricEngine.kombiRemainingElectricRange",
+    "total_range": "vehicle.drivetrain.lastRemainingRange",
+    "fuel_level": "vehicle.drivetrain.fuelSystem.level",
+    "charging_status": "vehicle.drivetrain.electricEngine.charging.status",
+    "plug": "vehicle.body.chargingPort.status",
+    "time_remaining": "vehicle.drivetrain.electricEngine.charging.timeRemaining",
+}
+PROBE_DESCRIPTORS = [
+    *DESCRIPTORS,
+    *ENERGY_DESCRIPTORS.values(),
+    "vehicle.drivetrain.electricEngine.charging.level",
+    "vehicle.drivetrain.electricEngine.remainingElectricRange",
+    "vehicle.powertrain.electric.battery.charging.status",
+    "vehicle.powertrain.electric.range.target",
+]
+# never echoed by the probe: the position of the car
+_PROBE_REDACTED = (LATITUDE_DESCRIPTOR, LONGITUDE_DESCRIPTOR)
+
+
+def descriptors_for(energy: bool) -> list[str]:
+    return [*DESCRIPTORS, *ENERGY_DESCRIPTORS.values()] if energy else list(DESCRIPTORS)
+
 
 SECRET_KEYS = (
     "client_id",
@@ -185,7 +214,9 @@ class CarDataClient:
         before_api_call: Callable[[str, str], None] | None = None,
         clock: Callable[[], float] = time.time,
         timeout: float = 30,
+        descriptors: list[str] | None = None,
     ) -> None:
+        self.descriptors = list(descriptors or DESCRIPTORS)
         self.store = store
         self.state = store.load()
         if client_id:
@@ -348,7 +379,7 @@ class CarDataClient:
 
     def container_id(self) -> str:
         current = self.state.get("container_id")
-        outdated = current if self.state.get("container_descriptors") != DESCRIPTORS else None
+        outdated = current if self.state.get("container_descriptors") != self.descriptors else None
         if not current or outdated:
             container = self.request(
                 "POST",
@@ -356,11 +387,11 @@ class CarDataClient:
                 json={
                     "name": CONTAINER_NAME,
                     "purpose": "kilometeradministratie",
-                    "technicalDescriptors": DESCRIPTORS,
+                    "technicalDescriptors": self.descriptors,
                 },
             )
             self.state["container_id"] = container["containerId"]
-            self.state["container_descriptors"] = DESCRIPTORS
+            self.state["container_descriptors"] = self.descriptors
             self._save()
             if outdated:
                 # max 10 containers per account; if this fails the old one just lingers
@@ -379,6 +410,47 @@ class CarDataClient:
             params={"containerId": container_id},
         )
         return data.get("telematicData", data)
+
+    def probe(self, descriptors: list[str] = PROBE_DESCRIPTORS) -> dict:
+        """Ask for `descriptors` through a throwaway container and report which ones the car
+        fills (3 API calls). Leaves state["container_id"] alone; the container is deleted
+        even when the read fails. No VIN or token in the result, no position values."""
+        vin = self.vin()
+        container = self.request(
+            "POST",
+            "/customers/containers",
+            json={
+                "name": PROBE_CONTAINER_NAME,
+                "purpose": "kilometeradministratie",
+                "technicalDescriptors": descriptors,
+            },
+        )
+        container_id = container["containerId"]
+        try:
+            data = self.request(
+                "GET",
+                f"/customers/vehicles/{vin}/telematicData",
+                params={"containerId": container_id},
+            )
+        finally:
+            try:
+                self.request("DELETE", f"/customers/containers/{container_id}")
+            except CarDataError:
+                pass
+        telematic = data.get("telematicData", data)
+        filled, empty = {}, []
+        for name in descriptors:
+            entry = telematic.get(name) or {}
+            if entry.get("value") in (None, ""):
+                empty.append(name)
+                continue
+            value = "<redacted>" if name in _PROBE_REDACTED else entry["value"]
+            filled[name] = {
+                "value": value,
+                "unit": entry.get("unit"),
+                "timestamp": entry.get("timestamp"),
+            }
+        return {"filled": filled, "empty": empty}
 
     def observe(self, vehicle: str, polled_at: datetime | None = None) -> Observation:
         polled_at = polled_at or datetime.now(UTC)
@@ -419,4 +491,55 @@ def parse_observation(telematic: dict, vehicle: str, polled_at: datetime) -> Obs
         lon=_float(telematic.get(LONGITUDE_DESCRIPTOR)),
         loc_ts=_timestamp((lat_entry or {}).get("timestamp")),
         raw=telematic,
+        energy=parse_energy(telematic, vehicle, polled_at),
+    )
+
+
+def _int(entry: dict | None) -> int | None:
+    if not entry or entry.get("value") in (None, ""):
+        return None
+    try:
+        return int(Decimal(str(entry["value"])).quantize(Decimal(1), ROUND_HALF_UP))
+    except InvalidOperation:
+        return None
+
+
+def _text(entry: dict | None) -> str | None:
+    value = (entry or {}).get("value")
+    return None if value in (None, "") else str(value)
+
+
+def _plugged_in(plug_status: str | None) -> bool | None:
+    if plug_status is None:
+        return None
+    status = plug_status.upper()
+    if "DISCONNECTED" in status or "NOT" in status:
+        return False
+    return True if "CONNECTED" in status else None
+
+
+def parse_energy(telematic: dict, vehicle: str, polled_at: datetime) -> EnergyState | None:
+    """None when the response holds no energy descriptor at all (energy tracking is off)."""
+    names = ENERGY_DESCRIPTORS
+    if not any(name in telematic for name in names.values()):
+        return None
+    entry = {purpose: telematic.get(name) for purpose, name in names.items()}
+    soc = _int(entry["soc"])
+    if soc is None:
+        soc = _int(entry["soc_displayed"])
+    plug_status = _text(entry["plug"])
+    filled = [e for e in entry.values() if e and e.get("value") not in (None, "")]
+    stamps = [t for t in (_timestamp(e.get("timestamp")) for e in filled) if t]
+    return EnergyState(
+        vehicle=vehicle,
+        polled_at=polled_at.astimezone(UTC),
+        soc_pct=soc,
+        electric_range_km=_int(entry["electric_range"]),
+        total_range_km=_int(entry["total_range"]),
+        fuel_level_pct=_int(entry["fuel_level"]),
+        charging_status=_text(entry["charging_status"]),
+        plug_status=plug_status,
+        plugged_in=_plugged_in(plug_status),
+        charge_time_remaining_min=_int(entry["time_remaining"]),
+        reported_at=max(stamps, default=None),
     )

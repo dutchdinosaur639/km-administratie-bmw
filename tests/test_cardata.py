@@ -320,3 +320,147 @@ def test_failed_delete_of_old_container_does_not_stop_the_poll():
     )
     assert c.observe("car").odometer_km == 23456
     assert store.state["container_id"] == "NEW"
+
+
+# --- energy state -------------------------------------------------------------------------
+
+E = cardata.ENERGY_DESCRIPTORS
+ENERGY_TELE = {
+    **TELEMATIC["telematicData"],
+    E["soc"]: {"value": "63.0", "unit": "%", "timestamp": "2026-10-10T14:00:00.000Z"},
+    E["electric_range"]: {"value": "21.6", "unit": "km", "timestamp": "2026-10-10T14:02:00Z"},
+    E["total_range"]: {"value": "512", "unit": "km", "timestamp": "2026-10-10T14:00:00Z"},
+    E["fuel_level"]: {"value": "40", "unit": "%", "timestamp": "2026-10-10T14:00:00Z"},
+    E["charging_status"]: {"value": "CHARGINGACTIVE", "timestamp": "2026-10-10T14:00:00Z"},
+    E["plug"]: {"value": "CONNECTED", "timestamp": "2026-10-10T14:00:00Z"},
+    E["time_remaining"]: {"value": "95", "unit": "min", "timestamp": "2026-10-10T14:00:00Z"},
+}
+POLLED = datetime(2026, 10, 10, 16, 13, tzinfo=UTC)
+
+
+def test_parse_energy_full_response():
+    obs = parse_observation(ENERGY_TELE, "car", POLLED)
+    e = obs.energy
+    assert (e.soc_pct, e.electric_range_km, e.total_range_km, e.fuel_level_pct) == (63, 22, 512, 40)
+    assert (e.charging_status, e.plug_status, e.plugged_in) == ("CHARGINGACTIVE", "CONNECTED", True)
+    assert e.charge_time_remaining_min == 95
+    assert e.reported_at == datetime(2026, 10, 10, 14, 2, tzinfo=UTC)
+    assert e.polled_at == POLLED and (e.location_id, e.at_home) == (None, None)
+
+
+def test_parse_energy_all_null_and_absent():
+    nulls = {name: {"value": None, "timestamp": None} for name in E.values()}
+    e = cardata.parse_energy(nulls, "car", POLLED)
+    assert e is not None
+    assert (e.soc_pct, e.charging_status, e.plugged_in, e.reported_at) == (None, None, None, None)
+    assert cardata.parse_energy(TELEMATIC["telematicData"], "car", POLLED) is None
+    assert parse_observation(TELEMATIC["telematicData"], "car", POLLED).energy is None
+
+
+def test_parse_energy_soc_falls_back_to_displayed_and_keeps_unknown_strings_raw():
+    tele = {
+        E["soc_displayed"]: {"value": "55", "timestamp": "2026-10-10T14:00:00Z"},
+        E["charging_status"]: {"value": "SOMETHING_NEW"},
+        E["plug"]: {"value": "weird"},
+    }
+    e = cardata.parse_energy(tele, "car", POLLED)
+    assert (e.soc_pct, e.charging_status, e.plug_status, e.plugged_in) == (
+        55,
+        "SOMETHING_NEW",
+        "weird",
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "plugged"),
+    [
+        ("CONNECTED", True),
+        ("DISCONNECTED", False),
+        ("NOT_CONNECTED", False),
+        ("NOTCONNECTED", False),
+        ("connected", True),
+        ("UNKNOWN", None),
+        (None, None),
+    ],
+)
+def test_plugged_in_mapping(value, plugged):
+    e = cardata.parse_energy({E["plug"]: {"value": value}}, "car", POLLED)
+    assert e.plugged_in is plugged
+
+
+def test_descriptors_for():
+    assert cardata.descriptors_for(False) == cardata.DESCRIPTORS
+    on = cardata.descriptors_for(True)
+    assert on[: len(cardata.DESCRIPTORS)] == cardata.DESCRIPTORS
+    assert set(E.values()) <= set(on)
+    assert set(on) <= set(cardata.PROBE_DESCRIPTORS)
+
+
+def test_descriptors_param_drives_container_and_toggling_replaces_it_once():
+    on = cardata.descriptors_for(True)
+    store = logged_in(vin="V", container_id="OLD", container_descriptors=cardata.DESCRIPTORS)
+    routes = {
+        ("POST", "/customers/containers"): [Resp(201, {"containerId": "NEW"})],
+        ("DELETE", "/customers/containers/OLD"): [Resp(204, "")],
+        ("GET", "/customers/vehicles/V/telematicData"): [Resp(200, TELEMATIC)],
+    }
+    calls = []
+    c = CarDataClient(
+        store,
+        session=FakeSession(routes),
+        clock=lambda: NOW,
+        before_api_call=lambda m, p: calls.append(m),
+        descriptors=on,
+    )
+    c.observe("car")
+    c.observe("car")
+    assert calls == ["POST", "DELETE", "GET", "GET"]
+    assert c.http.calls[0][2]["json"]["technicalDescriptors"] == on
+    assert store.state["container_descriptors"] == on
+    # default client (energy off) with an energy container: replaced back
+    c2 = client(
+        store,
+        {
+            ("POST", "/customers/containers"): [Resp(201, {"containerId": "N2"})],
+            ("DELETE", "/customers/containers/NEW"): [Resp(204, "")],
+            ("GET", "/customers/vehicles/V/telematicData"): [Resp(200, TELEMATIC)],
+        },
+    )
+    c2.observe("car")
+    assert store.state["container_descriptors"] == cardata.DESCRIPTORS
+
+
+def _probe_routes(get):
+    return {
+        ("POST", "/customers/containers"): [Resp(201, {"containerId": "P"})],
+        ("DELETE", "/customers/containers/P"): [Resp(204, "")],
+        ("GET", "/customers/vehicles/V/telematicData"): [get],
+    }
+
+
+def test_probe_uses_three_calls_and_leaves_the_real_container_alone():
+    store, calls = logged_in(vin="V", container_id="REAL"), []
+    c = client(store, _probe_routes(Resp(200, ENERGY_TELE)), calls)
+    result = c.probe()
+    assert calls == [
+        ("POST", "/customers/containers"),
+        ("GET", "/customers/vehicles/V/telematicData"),
+        ("DELETE", "/customers/containers/P"),
+    ]
+    assert c.http.calls[0][2]["json"]["name"] == cardata.PROBE_CONTAINER_NAME
+    assert c.http.calls[1][2]["params"] == {"containerId": "P"}
+    assert store.state["container_id"] == "REAL"
+    assert result["filled"][E["soc"]]["value"] == "63.0"
+    assert E["plug"] in result["filled"] and E["soc_displayed"] in result["empty"]
+    text = json.dumps(result)
+    assert "52.089" not in text and "5.110" not in text  # no position
+    assert '"V"' not in text and "at" not in result  # no VIN
+
+
+def test_probe_deletes_the_container_when_the_read_fails():
+    calls = []
+    c = client(logged_in(vin="V"), _probe_routes(Resp(500, {"error": "boom"})), calls)
+    with pytest.raises(ApiError):
+        c.probe()
+    assert calls[-1] == ("DELETE", "/customers/containers/P")

@@ -254,3 +254,87 @@ def test_poller_only_calls_bmw_inside_the_window():
     )
     assert Settings(22, 4).poll_hours == [22, 23, 0, 1, 2, 3, 4]
     assert len(Settings(0, 23).poll_hours) == 24
+
+
+_NOW = datetime(2026, 10, 14, 10, 0, tzinfo=UTC)
+
+
+def _energy_setup(monkeypatch, descriptors, telematic, **state):
+    tokens = MemoryStore(
+        {
+            "client_id": "c",
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires_at": 4e9,
+            "vin": "V",
+            "container_id": "C",
+            "container_descriptors": descriptors,
+            **state,
+        }
+    )
+    session = FakeSession({("GET", "/customers/vehicles/V/telematicData"): [Resp(200, telematic)]})
+    monkeypatch.setattr(cardata.requests, "Session", lambda: session)
+    return tokens, session
+
+
+def test_poller_stores_energy_state_with_at_home(monkeypatch):
+    from test_cardata import ENERGY_TELE
+
+    monkeypatch.setenv("ENERGY_TRACKING", "1")
+    store = seeded(SqliteStore())
+    home = next(loc for loc in store.locations() if loc.type.value == "home")
+    tele = {
+        **ENERGY_TELE,
+        cardata.LATITUDE_DESCRIPTOR: {"value": str(home.lat), "timestamp": "2026-10-10T14:01:06Z"},
+        cardata.LONGITUDE_DESCRIPTOR: {"value": str(home.lon), "timestamp": "2026-10-10T14:01:06Z"},
+    }
+    tokens, _ = _energy_setup(monkeypatch, cardata.descriptors_for(True), tele)
+    result = poller.handler({"force": True}, None, store=store, token_store=tokens, now=_NOW)
+    assert (result["soc_pct"], result["plugged_in"]) == (63, True)
+    state = store.energy_state("car")
+    assert (state.soc_pct, state.at_home, state.location_id) == (63, True, home.id)
+
+
+def test_poller_without_energy_tracking_stores_nothing(monkeypatch):
+    from test_cardata import TELEMATIC
+
+    monkeypatch.delenv("ENERGY_TRACKING", raising=False)
+    tokens, session = _energy_setup(monkeypatch, cardata.DESCRIPTORS, TELEMATIC)
+    store = seeded(SqliteStore())
+    result = poller.handler({"force": True}, None, store=store, token_store=tokens, now=_NOW)
+    assert "soc_pct" not in result
+    assert store.energy_state("car") is None
+    assert [c[0] for c in session.calls] == ["GET"]  # container unchanged, no extra calls
+
+
+def test_poller_probe_event_runs_outside_the_window(monkeypatch):
+    from test_cardata import ENERGY_TELE
+
+    monkeypatch.delenv("ENERGY_TRACKING", raising=False)
+    session = FakeSession(
+        {
+            ("POST", "/customers/containers"): [Resp(201, {"containerId": "P"})],
+            ("DELETE", "/customers/containers/P"): [Resp(204, "")],
+            ("GET", "/customers/vehicles/V/telematicData"): [Resp(200, ENERGY_TELE)],
+        }
+    )
+    monkeypatch.setattr(cardata.requests, "Session", lambda: session)
+    tokens = MemoryStore(
+        {
+            "client_id": "c",
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires_at": 4e9,
+            "vin": "V",
+            "container_id": "REAL",
+            "container_descriptors": cardata.DESCRIPTORS,
+        }
+    )
+    store = SqliteStore()
+    night = datetime(2026, 10, 14, 3, 0, tzinfo=UTC)
+    result = poller.handler({"probe": True}, None, store=store, token_store=tokens, now=night)
+    json.dumps(result)
+    assert result["event"] == "probe" and cardata.ENERGY_DESCRIPTORS["soc"] in result["filled"]
+    assert tokens.state["container_id"] == "REAL"
+    assert store.quota_used(datetime.now(UTC).date()) == 3
+    assert store.observations("car") == []

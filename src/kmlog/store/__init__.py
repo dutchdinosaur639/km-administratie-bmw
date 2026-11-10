@@ -2,7 +2,8 @@
 
 - SQLite for local development and tests (`kmlog.store.sqlite.SqliteStore`).
 - DynamoDB single-table for AWS (`kmlog.store.dynamodb.DynamoDbStore`; PK=VEHICLE#<id>,
-  SK=OBS#<ts> / LEG#<date>#<id> / NOTE#<date>, stamdata under PK=CONFIG, quota under PK=QUOTA).
+  SK=OBS#<ts> / LEG#<date>#<id> / NOTE#<date>, stamdata under PK=CONFIG, quota under PK=QUOTA,
+  latest energy state under PK=ENERGY#<id>, SK=LATEST).
   See ONTWERP.md §8.
 """
 
@@ -15,6 +16,7 @@ from typing import Protocol
 
 from ..model import (
     DayNote,
+    EnergyState,
     Leg,
     LegSource,
     Location,
@@ -49,6 +51,10 @@ class Store(Protocol):
         self, vehicle: str, start: datetime | None = None, end: datetime | None = None
     ) -> list[Observation]: ...
     def observation_before(self, vehicle: str, before: datetime) -> Observation | None: ...
+
+    # latest battery/charging state (one item per vehicle; an older polled_at never overwrites)
+    def put_energy_state(self, state: EnergyState) -> None: ...
+    def energy_state(self, vehicle: str) -> EnergyState | None: ...
 
     # legs: replace all legs of one vehicle + source within a date range (idempotent derive/import)
     def replace_legs(

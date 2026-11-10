@@ -12,6 +12,10 @@ Keys (all strings):
     VEHICLE#<id>        REPORT#<YYYY-MM>             what the monthly mail said
     AUTH                TOKEN#<sha256>               single-use login token, `ttl`
     COUNTER             <key>                        rate-limit counter, `ttl`
+    ENERGY#<id>         LATEST                       latest energy state; `data` plus flat
+                                                     attributes (soc_pct, plugged_in, ...) for
+                                                     outside readers; own partition so an IAM
+                                                     policy can allow only this key
 
 The record itself is the JSON from codec.py in attribute `data`, so both stores share one
 serialisation. Tables are on-demand; queries page through LastEvaluatedKey.
@@ -27,6 +31,7 @@ from typing import Any
 
 from ..model import (
     DayNote,
+    EnergyState,
     Leg,
     LegSource,
     Location,
@@ -191,6 +196,46 @@ class DynamoDbStore:
             if obs.polled_at < before:
                 return obs
         return None
+
+    # --- energy state ---------------------------------------------------------------------
+
+    def put_energy_state(self, state: EnergyState) -> None:
+        from botocore.exceptions import ClientError
+
+        flat = {
+            "soc_pct": state.soc_pct,
+            "electric_range_km": state.electric_range_km,
+            "total_range_km": state.total_range_km,
+            "fuel_level_pct": state.fuel_level_pct,
+            "charging_status": state.charging_status,
+            "plug_status": state.plug_status,
+            "plugged_in": state.plugged_in,
+            "charge_time_remaining_min": state.charge_time_remaining_min,
+            "at_home": state.at_home,
+            "location_id": state.location_id,
+            "polled_at": _utc(state.polled_at),
+            "reported_at": _utc(state.reported_at) if state.reported_at else None,
+        }
+        item = {
+            "PK": f"ENERGY#{state.vehicle}",
+            "SK": "LATEST",
+            "data": dumps(state),
+            **{k: v for k, v in flat.items() if v is not None},
+        }
+        try:
+            self.table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK) OR #p <= :p",
+                ExpressionAttributeNames={"#p": "polled_at"},
+                ExpressionAttributeValues={":p": _utc(state.polled_at)},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+
+    def energy_state(self, vehicle: str) -> EnergyState | None:
+        item = self.table.get_item(Key={"PK": f"ENERGY#{vehicle}", "SK": "LATEST"}).get("Item")
+        return loads(EnergyState, item["data"]) if item else None
 
     # --- legs and day notes ---------------------------------------------------------------
 

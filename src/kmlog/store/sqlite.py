@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..model import (
     DayNote,
+    EnergyState,
     Leg,
     LegSource,
     Location,
@@ -21,7 +22,7 @@ from ..model import (
     Settings,
     Vehicle,
 )
-from .codec import dumps, loads
+from .codec import dumps, from_dict, loads, to_dict
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS config (
@@ -160,6 +161,17 @@ class SqliteStore:
             (vehicle, _utc(before)),
         ).fetchone()
         return loads(Observation, row[0]) if row else None
+
+    # --- energy state ---------------------------------------------------------------------
+
+    def put_energy_state(self, state: EnergyState) -> None:
+        current = self.energy_state(state.vehicle)
+        if current is None or current.polled_at <= state.polled_at:
+            self._put_meta("ENERGY", state.vehicle, "LATEST", to_dict(state))
+
+    def energy_state(self, vehicle: str) -> EnergyState | None:
+        data = self._meta("ENERGY", vehicle).get("LATEST")
+        return from_dict(EnergyState, data) if data else None
 
     # --- legs and day notes ---------------------------------------------------------------
 

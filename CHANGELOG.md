@@ -7,6 +7,16 @@ GitHub Release (`lambda.zip`); installeren, bijwerken of terugzetten gaat met
 
 ## [Unreleased]
 
+### Toegevoegd
+- Laadstand, elektrische actieradius, laad- en stekkerstatus (opt-in, `energy_tracking = true`): de
+  poller bewaart ze bij elke meting en houdt de laatste stand bij in één DynamoDB-item
+  (`ENERGY#<voertuig>` / `LATEST`), bedoeld voor een workflow buiten km-admin (bijv. een melding
+  "steek de stekker erin"). `terraform output energy_reader_policy_json` geeft een IAM-policy die
+  alleen dat item leesbaar maakt. Met `{"probe": true}` op `kmlog-poller` zie je (3 CarData-calls)
+  welke descriptors jouw auto vult; de namen zijn nog niet geverifieerd op een 2018 530e. Zonder
+  de optie verandert er niets. Terugzetten kan zonder meer: alleen een nieuw item en een nieuw
+  optioneel veld. Zie `infra/README.md`, *Laadstand*.
+
 ## [0.6.0] - 2026-11-03
 
 ### Toegevoegd
