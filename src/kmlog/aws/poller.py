@@ -48,7 +48,12 @@ def poll(store: Store, client: cardata.CarDataClient, vehicle: str, now: datetim
     if obs.energy:
         at_home = None if obs.lat is None else bool(loc and loc.type is LocationType.HOME)
         state = dataclasses.replace(
-            obs.energy, location_id=loc.id if loc else None, at_home=at_home
+            obs.energy,
+            location_id=loc.id if loc else None,
+            at_home=at_home,
+            lat=obs.lat,
+            lon=obs.lon,
+            loc_ts=obs.loc_ts,
         )
         store.put_energy_state(state)
         energy = {

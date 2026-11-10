@@ -259,6 +259,35 @@ def test_energy_item_has_flat_attributes(aws, dynamodb_table):
     assert "fuel_level_pct" not in item and "total_range_km" not in item
 
 
+def test_energy_item_position_is_decimal_and_omitted_when_absent(aws, dynamodb_table):
+    from decimal import Decimal
+
+    from kmlog.model import EnergyState
+    from kmlog.store.dynamodb import DynamoDbStore
+
+    s = DynamoDbStore(dynamodb_table)
+    with_pos = EnergyState("car", T0, soc_pct=40, lat=52.08940277777778, lon=5.1, loc_ts=T0)
+    s.put_energy_state(with_pos)
+    item = s.table.get_item(Key={"PK": "ENERGY#car", "SK": "LATEST"})["Item"]
+    assert item["lat"] == Decimal("52.08940277777778") and item["lon"] == Decimal("5.1")
+    assert str(item["lat"]) == "52.08940277777778"
+    assert item["loc_ts"] == T0.isoformat()
+    assert s.energy_state("car") == with_pos
+    s.put_energy_state(EnergyState("car", T0 + timedelta(hours=1), soc_pct=41))
+    item = s.table.get_item(Key={"PK": "ENERGY#car", "SK": "LATEST"})["Item"]
+    assert not {"lat", "lon", "loc_ts"} & item.keys()
+
+
+def test_energy_state_without_position_fields_still_loads():
+    from kmlog.model import EnergyState
+
+    old = json.loads(dumps(EnergyState("car", T0, soc_pct=50)))
+    for k in ("lat", "lon", "loc_ts"):
+        old.pop(k)
+    e = loads(EnergyState, json.dumps(old))
+    assert (e.lat, e.lon, e.loc_ts) == (None, None, None)
+
+
 def test_observation_with_energy_roundtrips_and_one_without_still_loads(store):
     from kmlog.model import EnergyState
 

@@ -293,6 +293,8 @@ def test_poller_stores_energy_state_with_at_home(monkeypatch):
     assert (result["soc_pct"], result["plugged_in"]) == (63, True)
     state = store.energy_state("car")
     assert (state.soc_pct, state.at_home, state.location_id) == (63, True, home.id)
+    assert (state.lat, state.lon) == (home.lat, home.lon)
+    assert state.loc_ts == datetime(2026, 10, 10, 14, 1, 6, tzinfo=UTC)
 
 
 def test_poller_without_energy_tracking_stores_nothing(monkeypatch):

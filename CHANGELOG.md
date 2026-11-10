@@ -7,6 +7,16 @@ GitHub Release (`lambda.zip`); installeren, bijwerken of terugzetten gaat met
 
 ## [Unreleased]
 
+## [0.7.0-rc.3] - 2026-11-10
+
+Pre-release: huidige positie in het energie-item.
+
+### Toegevoegd
+- Het item `ENERGY#<vehicle>` / `LATEST` bevat nu ook `lat`, `lon` en `loc_ts` (huidige positie van
+  de auto), omdat de externe laadmelding-app die nodig heeft. Het leesbeleid voor die partitie geeft
+  daarmee de huidige positie, maar geen historie (ritten, legs en oudere observaties blijven
+  onleesbaar). Alleen nieuwe optionele velden; terugzetten is veilig.
+
 ## [0.7.0-rc.2] - 2026-11-10
 
 Pre-release: herstel van de energie-descriptors na `CU-402 Telematic key is invalid`.

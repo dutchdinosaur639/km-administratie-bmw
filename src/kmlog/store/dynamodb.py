@@ -13,7 +13,8 @@ Keys (all strings):
     AUTH                TOKEN#<sha256>               single-use login token, `ttl`
     COUNTER             <key>                        rate-limit counter, `ttl`
     ENERGY#<id>         LATEST                       latest energy state; `data` plus flat
-                                                     attributes (soc_pct, plugged_in, ...) for
+                                                     attributes (soc_pct, plugged_in, lat, lon,
+                                                     loc_ts, ...) for
                                                      outside readers; own partition so an IAM
                                                      policy can allow only this key
 
@@ -215,6 +216,10 @@ class DynamoDbStore:
             "location_id": state.location_id,
             "polled_at": _utc(state.polled_at),
             "reported_at": _utc(state.reported_at) if state.reported_at else None,
+            # boto3 rejects float; str() keeps the exact repr
+            "lat": Decimal(str(state.lat)) if state.lat is not None else None,
+            "lon": Decimal(str(state.lon)) if state.lon is not None else None,
+            "loc_ts": _utc(state.loc_ts) if state.loc_ts else None,
         }
         item = {
             "PK": f"ENERGY#{state.vehicle}",

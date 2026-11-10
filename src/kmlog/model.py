@@ -139,6 +139,9 @@ class EnergyState:
     reported_at: datetime | None = None  # newest timestamp among the filled energy fields
     location_id: str | None = None  # matched place at poll time (set by the poller)
     at_home: bool | None = None  # that place is of type home (set by the poller)
+    lat: float | None = None  # current position of the car (set by the poller)
+    lon: float | None = None
+    loc_ts: datetime | None = None  # when the car reported that position
 
 
 @dataclass(frozen=True)

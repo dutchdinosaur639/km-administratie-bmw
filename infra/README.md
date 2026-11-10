@@ -153,7 +153,10 @@ km-admin). Met `energy_tracking = true` leest de poller elk uur ook acculading, 
 actieradius, laadstatus en stekkerstatus en bewaart de laatste stand in één DynamoDB-item
 (`PK = ENERGY#<vehicle_id>`, `SK = LATEST`, platte attributen: `soc_pct`, `electric_range_km`,
 `total_range_km`, `charging_status`, `plug_status`, `plugged_in`,
-`charge_time_remaining_min`, `at_home`, `location_id`, `polled_at`, `reported_at`). Uit (standaard)
+`charge_time_remaining_min`, `at_home`, `location_id`, `lat`, `lon`, `loc_ts`, `polled_at`,
+`reported_at`). `lat`/`lon` (Decimal) en `loc_ts` (UTC) zijn de huidige positie van de auto: een
+lezer met het beleid voor deze partitie ziet dus waar de auto nu staat. Geen historie: ritten,
+legs en oudere observaties blijven onleesbaar voor dat beleid. Uit (standaard)
 verandert er niets: zelfde container, zelfde descriptors. (`fuel_level_pct` bestaat nog in het
 model maar is altijd leeg: er is geen bevestigde BMW-sleutel voor.) Weigert BMW de uitgebreide
 container (`CU-402`, een ongeldige sleutel), dan valt de poller terug op de basisdescriptors, zodat
