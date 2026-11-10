@@ -37,6 +37,6 @@ jobs:
             on && /^## \[/ { exit }
             on { print }' CHANGELOG.md > dist/notes.md
           test -s dist/notes.md || { echo "no CHANGELOG.md section for $GITHUB_REF_NAME"; exit 1; }
-      - run: gh release create "$GITHUB_REF_NAME" dist/lambda.zip dist/lambda.zip.sha256 --title "$GITHUB_REF_NAME" --notes-file dist/notes.md
+      - run: gh release create "$GITHUB_REF_NAME" dist/lambda.zip dist/lambda.zip.sha256 --title "$GITHUB_REF_NAME" --notes-file dist/notes.md $([[ "$GITHUB_REF_NAME" == *-* ]] && echo --prerelease)
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploy a released version: scripts/deploy.sh vX.Y.Z [--plan | --apply] [--build]
+# Deploy a released version: scripts/deploy.sh vX.Y.Z[-rc.N] [--plan | --apply] [--build]
+# From a fork: GH_REPO=<owner>/<repo> scripts/deploy.sh ... downloads that repo's release.
 #
 # A version is code + infra under one git tag. The script checks out the tag, takes dist/lambda.zip
 # from the GitHub Release of that tag (checked against lambda.zip.sha256; --build builds it locally
@@ -26,7 +27,7 @@ main() {
       *) die "unknown option $arg" ;;
     esac
   done
-  [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "usage: scripts/deploy.sh vX.Y.Z [--plan | --apply] [--build]"
+  [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || die "usage: scripts/deploy.sh vX.Y.Z [--plan | --apply] [--build]"
   cd "$(dirname "$0")/.."
   [[ -z $(git status --porcelain) ]] || die "working tree not clean (commit or stash first)"
   [[ -f .env ]] || die "no .env with the deploy credentials"

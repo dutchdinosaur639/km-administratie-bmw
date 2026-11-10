@@ -7,6 +7,10 @@ GitHub Release (`lambda.zip`); installeren, bijwerken of terugzetten gaat met
 
 ## [Unreleased]
 
+## [0.7.0-rc.1] - 2026-11-10
+
+Pre-release in de fork: laadstand uitproberen (probe) vóór `energy_tracking` aan gaat.
+
 ### Toegevoegd
 - Laadstand, elektrische actieradius, laad- en stekkerstatus (opt-in, `energy_tracking = true`): de
   poller bewaart ze bij elke meting en houdt de laatste stand bij in één DynamoDB-item
