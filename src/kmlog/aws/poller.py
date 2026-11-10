@@ -100,6 +100,8 @@ def handler(
         if event.get("probe") and not result:
             result = {"event": "probe", **client.probe(cardata.PROBE_DESCRIPTORS)}
         result = result or poll(store, client, env("VEHICLE_ID", "car"), now)
+        if client.energy_rejected:
+            result["energy_rejected"] = True
     except QuotaExceeded as e:
         result = {"event": "quota_exceeded", "message": str(e)}
     log_event(**result)

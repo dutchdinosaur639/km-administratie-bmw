@@ -330,7 +330,6 @@ ENERGY_TELE = {
     E["soc"]: {"value": "63.0", "unit": "%", "timestamp": "2026-10-10T14:00:00.000Z"},
     E["electric_range"]: {"value": "21.6", "unit": "km", "timestamp": "2026-10-10T14:02:00Z"},
     E["total_range"]: {"value": "512", "unit": "km", "timestamp": "2026-10-10T14:00:00Z"},
-    E["fuel_level"]: {"value": "40", "unit": "%", "timestamp": "2026-10-10T14:00:00Z"},
     E["charging_status"]: {"value": "CHARGINGACTIVE", "timestamp": "2026-10-10T14:00:00Z"},
     E["plug"]: {"value": "CONNECTED", "timestamp": "2026-10-10T14:00:00Z"},
     E["time_remaining"]: {"value": "95", "unit": "min", "timestamp": "2026-10-10T14:00:00Z"},
@@ -341,7 +340,12 @@ POLLED = datetime(2026, 10, 10, 16, 13, tzinfo=UTC)
 def test_parse_energy_full_response():
     obs = parse_observation(ENERGY_TELE, "car", POLLED)
     e = obs.energy
-    assert (e.soc_pct, e.electric_range_km, e.total_range_km, e.fuel_level_pct) == (63, 22, 512, 40)
+    assert (e.soc_pct, e.electric_range_km, e.total_range_km, e.fuel_level_pct) == (
+        63,
+        22,
+        512,
+        None,
+    )
     assert (e.charging_status, e.plug_status, e.plugged_in) == ("CHARGINGACTIVE", "CONNECTED", True)
     assert e.charge_time_remaining_min == 95
     assert e.reported_at == datetime(2026, 10, 10, 14, 2, tzinfo=UTC)
@@ -464,3 +468,109 @@ def test_probe_deletes_the_container_when_the_read_fails():
     with pytest.raises(ApiError):
         c.probe()
     assert calls[-1] == ("DELETE", "/customers/containers/P")
+
+
+CU402 = Resp(400, {"exveErrorId": "CU-402", "exveErrorMsg": "Telematic key is invalid"})
+
+
+def _fallback_client(store, extra_routes=None, descriptors=None, calls=None):
+    routes = {
+        ("POST", "/customers/containers"): [CU402, Resp(201, {"containerId": "BASE"})],
+        ("DELETE", "/customers/containers/OLD"): [Resp(204, "")],
+        ("GET", "/customers/vehicles/V/telematicData"): [Resp(200, TELEMATIC)],
+        **(extra_routes or {}),
+    }
+    return CarDataClient(
+        store,
+        session=FakeSession(routes),
+        clock=lambda: NOW,
+        before_api_call=(lambda m, p: calls.append(m)) if calls is not None else None,
+        descriptors=descriptors if descriptors is not None else cardata.descriptors_for(True),
+    )
+
+
+def test_cu402_falls_back_to_base_container_and_records_rejection():
+    on = cardata.descriptors_for(True)
+    store, calls = logged_in(vin="V", container_id="OLD", container_descriptors=[]), []
+    c = _fallback_client(store, calls=calls)
+    assert c.observe("car").odometer_km == 23456
+    assert calls == ["POST", "POST", "DELETE", "GET"]
+    posts = [k["json"]["technicalDescriptors"] for m, _, k in c.http.calls if m == "POST"]
+    assert posts == [on, cardata.DESCRIPTORS]
+    assert store.state["container_id"] == "BASE"
+    assert store.state["container_descriptors"] == cardata.DESCRIPTORS
+    assert store.state["rejected_descriptors"] == on
+    assert c.energy_rejected
+
+
+def test_after_rejection_the_next_poll_makes_no_extra_post():
+    on = cardata.descriptors_for(True)
+    store = logged_in(
+        vin="V",
+        container_id="BASE",
+        container_descriptors=cardata.DESCRIPTORS,
+        rejected_descriptors=on,
+    )
+    calls = []
+    c = _fallback_client(store, calls=calls)
+    c.observe("car")
+    c.observe("car")
+    assert calls == ["GET", "GET"]
+    assert c.energy_rejected
+
+
+def test_changed_descriptor_list_retries_once():
+    old = cardata.descriptors_for(True)
+    new = [*cardata.DESCRIPTORS, E["soc"]]
+    store = logged_in(
+        vin="V",
+        container_id="OLD",
+        container_descriptors=cardata.DESCRIPTORS,
+        rejected_descriptors=old,
+    )
+    calls = []
+    c = _fallback_client(
+        store,
+        {("POST", "/customers/containers"): [Resp(201, {"containerId": "FIXED"})]},
+        descriptors=new,
+        calls=calls,
+    )
+    assert not c.energy_rejected
+    c.observe("car")
+    assert store.state["container_id"] == "FIXED"
+    assert store.state["container_descriptors"] == new
+    assert calls == ["POST", "DELETE", "GET"]
+
+
+def test_cu402_on_base_descriptors_still_raises():
+    store = logged_in(vin="V")
+    c = _fallback_client(store, descriptors=list(cardata.DESCRIPTORS))
+    with pytest.raises(ApiError):
+        c.observe("car")
+    assert "rejected_descriptors" not in store.state
+
+
+def test_other_400_does_not_fall_back():
+    store = logged_in(vin="V")
+    c = _fallback_client(
+        store, {("POST", "/customers/containers"): [Resp(400, {"error": "other"})]}
+    )
+    with pytest.raises(ApiError):
+        c.observe("car")
+
+
+def test_probe_cu402_returns_error_instead_of_raising():
+    calls = []
+    routes = {("POST", "/customers/containers"): [CU402]}
+    c = client(logged_in(vin="V"), routes, calls)
+    result = c.probe()
+    assert result["filled"] == {} and result["empty"] == []
+    assert result["error"].startswith("CU-402")
+    assert result["descriptors"] == cardata.PROBE_DESCRIPTORS
+    assert calls == [("POST", "/customers/containers")]
+
+
+def test_probe_other_post_error_raises():
+    c = client(logged_in(vin="V"), {("POST", "/customers/containers"): [Resp(500, {})]})
+    with pytest.raises(ApiError):
+        c.probe()

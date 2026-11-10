@@ -7,6 +7,21 @@ GitHub Release (`lambda.zip`); installeren, bijwerken of terugzetten gaat met
 
 ## [Unreleased]
 
+## [0.7.0-rc.2] - 2026-11-10
+
+Pre-release: herstel van de energie-descriptors na `CU-402 Telematic key is invalid`.
+
+### Gewijzigd
+- Descriptornamen teruggebracht tot de namen die evcc en node-red-contrib-bmw-cardata bevestigen;
+  brandstofniveau is vervallen (geen bevestigde sleutel; `fuel_level_pct` blijft leeg). De
+  probe-lijst heeft alleen bevestigde extra's.
+
+### Opgelost
+- Eén ongeldige sleutel liet BMW de hele container weigeren. De poller valt nu bij `CU-402` terug
+  op de basisdescriptors (het kilometerlog loopt door), onthoudt de geweigerde lijst
+  (`rejected_descriptors` in het secret; oudere versies negeren dat) en logt `energy_rejected`.
+  De probe geeft bij `CU-402` een `error` terug in plaats van te falen.
+
 ## [0.7.0-rc.1] - 2026-11-10
 
 Pre-release in de fork: laadstand uitproberen (probe) vóór `energy_tracking` aan gaat.

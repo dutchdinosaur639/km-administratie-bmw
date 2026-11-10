@@ -16,6 +16,7 @@ Token state is a dict kept in a TokenStore: a JSON file locally (.cardata_tokens
 Secrets Manager secret `kmlog/cardata` in AWS. Keys: client_id, access_token, refresh_token,
 expires_at (epoch seconds), container_id, container_descriptors, vin, plus while linking via
 the web UI: pending_login (a started device-code login) and vehicles (the account's mappings).
+rejected_descriptors: the descriptor list BMW rejected with CU-402 (fallback to the base list).
 A container whose descriptors differ from the client's `descriptors` is replaced (and the old
 one deleted) on the next poll.
 """
@@ -59,14 +60,13 @@ DESCRIPTORS = [
 CONTAINER_NAME = "kmlog"
 PROBE_CONTAINER_NAME = "kmlog-probe"
 
-# Energy state (opt-in, ENERGY_TRACKING). Names for a G30 530e are UNVERIFIED: run the
-# {"probe": true} event and fix the names that stay empty (ONTWERP §6).
+# Energy state (opt-in, ENERGY_TRACKING). Names confirmed by the evcc docs and
+# node-red-contrib-bmw-cardata (ONTWERP §6). There is no confirmed fuel-level key.
 ENERGY_DESCRIPTORS = {
     "soc": "vehicle.drivetrain.batteryManagement.header",
     "soc_displayed": "vehicle.powertrain.electric.battery.stateOfCharge.displayed",
     "electric_range": "vehicle.drivetrain.electricEngine.kombiRemainingElectricRange",
     "total_range": "vehicle.drivetrain.lastRemainingRange",
-    "fuel_level": "vehicle.drivetrain.fuelSystem.level",
     "charging_status": "vehicle.drivetrain.electricEngine.charging.status",
     "plug": "vehicle.body.chargingPort.status",
     "time_remaining": "vehicle.drivetrain.electricEngine.charging.timeRemaining",
@@ -74,10 +74,10 @@ ENERGY_DESCRIPTORS = {
 PROBE_DESCRIPTORS = [
     *DESCRIPTORS,
     *ENERGY_DESCRIPTORS.values(),
-    "vehicle.drivetrain.electricEngine.charging.level",
-    "vehicle.drivetrain.electricEngine.remainingElectricRange",
-    "vehicle.powertrain.electric.battery.charging.status",
-    "vehicle.powertrain.electric.range.target",
+    # One invalid key makes BMW reject the whole container (CU-402): only add confirmed names.
+    "vehicle.drivetrain.electricEngine.charging.hvStatus",
+    "vehicle.powertrain.electric.battery.stateOfCharge.target",
+    "vehicle.powertrain.electric.battery.charging.power",
 ]
 # never echoed by the probe: the position of the car
 _PROBE_REDACTED = (LATITUDE_DESCRIPTOR, LONGITUDE_DESCRIPTOR)
@@ -94,6 +94,7 @@ SECRET_KEYS = (
     "expires_at",
     "container_id",
     "container_descriptors",
+    "rejected_descriptors",
     "vin",
     "pending_login",
     "vehicles",
@@ -377,21 +378,42 @@ class CarDataClient:
             self._save()
         return self.state["vin"]
 
+    @property
+    def energy_rejected(self) -> bool:
+        """True while BMW rejected our extended descriptor list and the base list is used."""
+        return self.descriptors != DESCRIPTORS and self.descriptors == self.state.get(
+            "rejected_descriptors"
+        )
+
+    def _create_container(self, descriptors: list[str]) -> str:
+        container = self.request(
+            "POST",
+            "/customers/containers",
+            json={
+                "name": CONTAINER_NAME,
+                "purpose": "kilometeradministratie",
+                "technicalDescriptors": descriptors,
+            },
+        )
+        return container["containerId"]
+
     def container_id(self) -> str:
+        wanted = list(DESCRIPTORS) if self.energy_rejected else self.descriptors
         current = self.state.get("container_id")
-        outdated = current if self.state.get("container_descriptors") != self.descriptors else None
+        outdated = current if self.state.get("container_descriptors") != wanted else None
         if not current or outdated:
-            container = self.request(
-                "POST",
-                "/customers/containers",
-                json={
-                    "name": CONTAINER_NAME,
-                    "purpose": "kilometeradministratie",
-                    "technicalDescriptors": self.descriptors,
-                },
-            )
-            self.state["container_id"] = container["containerId"]
-            self.state["container_descriptors"] = self.descriptors
+            try:
+                new_id = self._create_container(wanted)
+            except ApiError as e:
+                # One invalid key rejects the whole container (CU-402); the km log must never
+                # stop for an opt-in extra, so fall back to the base descriptors.
+                if e.status != 400 or "CU-402" not in e.body or wanted == DESCRIPTORS:
+                    raise
+                self.state["rejected_descriptors"] = list(wanted)
+                wanted = list(DESCRIPTORS)
+                new_id = self._create_container(wanted)
+            self.state["container_id"] = new_id
+            self.state["container_descriptors"] = wanted
             self._save()
             if outdated:
                 # max 10 containers per account; if this fails the old one just lingers
@@ -416,15 +438,25 @@ class CarDataClient:
         fills (3 API calls). Leaves state["container_id"] alone; the container is deleted
         even when the read fails. No VIN or token in the result, no position values."""
         vin = self.vin()
-        container = self.request(
-            "POST",
-            "/customers/containers",
-            json={
-                "name": PROBE_CONTAINER_NAME,
-                "purpose": "kilometeradministratie",
-                "technicalDescriptors": descriptors,
-            },
-        )
+        try:
+            container = self.request(
+                "POST",
+                "/customers/containers",
+                json={
+                    "name": PROBE_CONTAINER_NAME,
+                    "purpose": "kilometeradministratie",
+                    "technicalDescriptors": descriptors,
+                },
+            )
+        except ApiError as e:
+            if e.status != 400 or "CU-402" not in e.body:
+                raise
+            return {
+                "filled": {},
+                "empty": [],
+                "error": "CU-402: one or more probe keys are invalid",
+                "descriptors": list(descriptors),
+            }
         container_id = container["containerId"]
         try:
             data = self.request(
@@ -536,7 +568,6 @@ def parse_energy(telematic: dict, vehicle: str, polled_at: datetime) -> EnergySt
         soc_pct=soc,
         electric_range_km=_int(entry["electric_range"]),
         total_range_km=_int(entry["total_range"]),
-        fuel_level_pct=_int(entry["fuel_level"]),
         charging_status=_text(entry["charging_status"]),
         plug_status=plug_status,
         plugged_in=_plugged_in(plug_status),

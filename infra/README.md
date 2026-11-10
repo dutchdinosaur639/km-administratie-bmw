@@ -152,15 +152,18 @@ wilt (bijv. een melding "steek de stekker erin" via Home Assistant of n8n; die m
 km-admin). Met `energy_tracking = true` leest de poller elk uur ook acculading, elektrische
 actieradius, laadstatus en stekkerstatus en bewaart de laatste stand in één DynamoDB-item
 (`PK = ENERGY#<vehicle_id>`, `SK = LATEST`, platte attributen: `soc_pct`, `electric_range_km`,
-`total_range_km`, `fuel_level_pct`, `charging_status`, `plug_status`, `plugged_in`,
+`total_range_km`, `charging_status`, `plug_status`, `plugged_in`,
 `charge_time_remaining_min`, `at_home`, `location_id`, `polled_at`, `reported_at`). Uit (standaard)
-verandert er niets: zelfde container, zelfde descriptors.
+verandert er niets: zelfde container, zelfde descriptors. (`fuel_level_pct` bestaat nog in het
+model maar is altijd leeg: er is geen bevestigde BMW-sleutel voor.) Weigert BMW de uitgebreide
+container (`CU-402`, een ongeldige sleutel), dan valt de poller terug op de basisdescriptors, zodat
+het kilometerlog doorloopt; de log van `kmlog-poller` toont dan `energy_rejected: true`.
 
 Uitrollen, in deze volgorde:
 
 A. Installeer de versie met `energy_tracking = false` (gedrag ongewijzigd).
-B. Probeer welke descriptors jouw auto vult (kost 3 CarData-calls; de namen zijn voor een 2018 530e
-   nog niet geverifieerd, zie `docs/ONTWERP.md` §6):
+B. Probeer welke descriptors jouw auto vult (kost 3 CarData-calls; de namen komen uit evcc, zie
+   `docs/ONTWERP.md` §6):
 
    ```sh
    aws lambda invoke --function-name kmlog-poller --cli-binary-format raw-in-base64-out \
@@ -168,7 +171,7 @@ B. Probeer welke descriptors jouw auto vult (kost 3 CarData-calls; de namen zijn
    ```
 
    De probe draait in de Lambda, want de refresh token roteert en alleen de Lambdas beheren hem.
-   `filled` toont de gevulde descriptors, `empty` de lege. Pas zo nodig `ENERGY_DESCRIPTORS` aan.
+   `filled` toont de gevulde descriptors, `empty` de lege. Antwoordt BMW met `error: CU-402`, dan staat er een ongeldige sleutel in de probe-lijst.
 C. Zet `energy_tracking = true`, `terraform plan` lezen, `apply`. De eerstvolgende poll vervangt de
    container (2 extra calls, eenmalig).
 D. Koppel de buitenstaande workflow: `terraform output -raw energy_reader_policy_json` is een

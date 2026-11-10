@@ -338,3 +338,30 @@ def test_poller_probe_event_runs_outside_the_window(monkeypatch):
     assert tokens.state["container_id"] == "REAL"
     assert store.quota_used(datetime.now(UTC).date()) == 3
     assert store.observations("car") == []
+
+
+def test_poller_logs_energy_rejected_after_cu402(monkeypatch):
+    from test_cardata import CU402, TELEMATIC
+
+    monkeypatch.setenv("ENERGY_TRACKING", "1")
+    session = FakeSession(
+        {
+            ("POST", "/customers/containers"): [CU402, Resp(201, {"containerId": "BASE"})],
+            ("GET", "/customers/vehicles/V/telematicData"): [Resp(200, TELEMATIC)],
+        }
+    )
+    monkeypatch.setattr(cardata.requests, "Session", lambda: session)
+    tokens = MemoryStore(
+        {
+            "client_id": "c",
+            "access_token": "a",
+            "refresh_token": "r",
+            "expires_at": 4e9,
+            "vin": "V",
+        }
+    )
+    store = seeded(SqliteStore())
+    result = poller.handler({"force": True}, None, store=store, token_store=tokens, now=_NOW)
+    assert result["event"] == "poll" and result["energy_rejected"] is True
+    assert tokens.state["container_descriptors"] == cardata.DESCRIPTORS
+    assert tokens.state["rejected_descriptors"] == cardata.descriptors_for(True)

@@ -157,11 +157,17 @@ geverifieerd tegen de broncode van drie community-clients (zie §12) en in de pr
   hierboven): acculading (`vehicle.drivetrain.batteryManagement.header` en
   `vehicle.powertrain.electric.battery.stateOfCharge.displayed`), elektrische actieradius
   (`vehicle.drivetrain.electricEngine.kombiRemainingElectricRange`), totale actieradius
-  (`vehicle.drivetrain.lastRemainingRange`), brandstofniveau (`vehicle.drivetrain.fuelSystem.level`),
-  laadstatus (`vehicle.drivetrain.electricEngine.charging.status`), stekkerstatus
+  (`vehicle.drivetrain.lastRemainingRange`), laadstatus (`vehicle.drivetrain.electricEngine.charging.status`), stekkerstatus
   (`vehicle.body.chargingPort.status`) en resterende laadtijd
-  (`vehicle.drivetrain.electricEngine.charging.timeRemaining`). **Namen nog te verifiëren op een
-  2018 530e**; niet elke auto vult elke descriptor. Een wijziging van de descriptorlijst vervangt
+  (`vehicle.drivetrain.electricEngine.charging.timeRemaining`). **De namen zijn bevestigd via
+  evcc (docs.evcc.io/en/vehicles/bmw-cardata) en node-red-contrib-bmw-cardata**; niet elke auto
+  vult elke descriptor. Brandstofniveau is vervallen: er is geen bevestigde sleutel voor (het veld
+  `fuel_level_pct` blijft in het model voor compatibiliteit en is altijd leeg). Eén onbekende
+  sleutel doet BMW de hele container weigeren (`400 CU-402 Telematic key is invalid`). Daarom valt
+  de poller bij CU-402 terug op de basisdescriptors en onthoudt de geweigerde lijst
+  (`rejected_descriptors` in het secret) om niet elk uur opnieuw te proberen; bij een andere
+  lijst (nieuwe versie) wordt het eenmalig opnieuw geprobeerd. De poller-log toont dan
+  `energy_rejected: true`. De probe geeft bij CU-402 een `error` terug in plaats van te falen. Een wijziging van de descriptorlijst vervangt
   de container eenmalig (2 calls).
 - **Probe**: event `{"probe": true}` op de poller maakt een wegwerpcontainer (`kmlog-probe`) met alle
   kandidaten, leest telematicData en verwijdert hem weer (3 calls) en toont welke descriptors
@@ -530,6 +536,7 @@ tijdstempels.
 | 2026-10-21 | Achter CloudFront: geheime header `X-Origin-Verify`, de app weigert verzoeken zonder; web-Lambda met gereserveerde concurrency 5 | De kale Function URL is dan geen omweg meer, en een vloed verzoeken kost hooguit wat CloudFront-verzoeken in plaats van opschalende Lambdas. Cloudflare als proxy afgewezen: het pakt het verkeer uit (eigen certificaat) en beschermt alleen de route via het domein. |
 | 2026-11-03 | Maandstaat en jaaroverzicht ook als PDF, naast de Excel, met een eigen kleine schrijver op de standaardbibliotheek; tekens buiten WinAnsi worden vervangen | Boekhoudprogramma's (bijv. Exact Online) nemen een PDF als bijlage bij een boeking, geen .xlsx; een PDF is ook het archiefstuk. Eén `Maandstaat` voor beide formaten. reportlab maakte de zip 8 MB groter (~1 → ~9 MB): 6,3 MB daarvan is Pillow met 18 native bibliotheken, door reportlab altijd geïmporteerd terwijl de PDF geen afbeeldingen heeft. Lichtere pakketten vielen af (pdfme crasht op € en →, borb is AGPL, fpdf2 heeft ook Pillow nodig). Een vaste tabel met tekst is goed zelf te schrijven (`report/pdfwriter.py`). Ingebedde lettertypen zijn daarmee bewerkelijk; de spelling van een enkele buitenlandse naam weegt daar niet tegen op. Is ooit een afbeelding of volledige Unicode nodig, dan is reportlab de overstap: alleen `report/pdf.py` verandert. |
 | 2026-11-10 | Laadstand en actieradius bewaren (opt-in `energy_tracking`), als eigen item `ENERGY#<vehicle>`/`LATEST`; ruwe BMW-teksten voor laad- en stekkerstatus; de melding zelf buiten km-admin; de probe draait in de poller-Lambda | Eigen partitie: een IAM-lezer met `dynamodb:LeadingKeys` ziet verder niets (geen ritten of posities). Ruwe teksten in plaats van enums: een nieuwe waarde van BMW breekt de vorige versie niet bij terugzetten (§ Versies, AGENTS.md). Opt-in: installaties zonder plug-in (bijv. i4) houden exact dezelfde container en calls. De melding hoort in een workflow naar eigen keuze (Home Assistant, n8n), niet in km-admin. De probe draait in de Lambda omdat refresh tokens roteren en alleen de Lambdas ze beheren; een lokaal script zou de token ongeldig maken. Terugzetten is veilig: alleen een nieuw item en een nieuw optioneel veld. |
+| 2026-11-10 | Bij CU-402 op de energie-container terugvallen op de basisdescriptors en de geweigerde lijst onthouden (`rejected_descriptors`); de probe geeft dan een foutmelding terug in plaats van te falen | Eén ongeldige sleutel laat BMW de hele container weigeren; het kilometerlog mag nooit stoppen door een opt-in extra. Zonder onthouden zou elk uur een mislukte POST de quota kosten. Een andere descriptorlijst (nieuwe versie met gecorrigeerde namen) wordt eenmalig opnieuw geprobeerd. Terugzetten is veilig: oudere versies negeren de extra sleutel in het secret. Brandstofniveau geschrapt (geen bevestigde sleutel). |
 
 ## 12. Bronnen
 
